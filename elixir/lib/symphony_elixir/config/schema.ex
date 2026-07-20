@@ -52,7 +52,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string)
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:team_key, :string)
       field(:assignee, :string)
+      field(:required_comment, :string)
       field(:provider, :map, default: %{})
       field(:secret_environment_names, {:array, :string}, default: [])
       field(:required_labels, {:array, :string}, default: [])
@@ -70,7 +72,9 @@ defmodule SymphonyElixir.Config.Schema do
           :endpoint,
           :api_key,
           :project_slug,
+          :team_key,
           :assignee,
+          :required_comment,
           :provider,
           :required_labels,
           :active_states,
@@ -406,7 +410,9 @@ defmodule SymphonyElixir.Config.Schema do
             |> Map.put_new("endpoint", settings.tracker.endpoint || @linear_endpoint)
             |> Map.put_new("api_key", settings.tracker.api_key)
             |> Map.put_new("project_slug", settings.tracker.project_slug)
+            |> Map.put_new("team_key", settings.tracker.team_key)
             |> Map.put_new("assignee", settings.tracker.assignee)
+            |> Map.put_new("required_comment", settings.tracker.required_comment)
 
           resolved_api_key =
             resolve_secret_setting(linear_provider["api_key"], System.get_env("LINEAR_API_KEY"))
@@ -442,7 +448,9 @@ defmodule SymphonyElixir.Config.Schema do
       | endpoint: Map.get(provider, "endpoint", settings.tracker.endpoint),
         api_key: api_key,
         project_slug: Map.get(provider, "project_slug", settings.tracker.project_slug),
+        team_key: Map.get(provider, "team_key", settings.tracker.team_key),
         assignee: assignee,
+        required_comment: Map.get(provider, "required_comment", settings.tracker.required_comment),
         provider: provider,
         secret_environment_names: Enum.uniq(secret_environment_names),
         active_states: active_states,

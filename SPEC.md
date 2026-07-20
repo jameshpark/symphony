@@ -387,6 +387,9 @@ Fields:
   - Each adapter MUST document its required keys, defaults, secret keys, `$VAR_NAME` support, and
     validation errors.
   - If a documented secret `$VAR_NAME` resolves to an empty string, treat that secret as missing.
+  - Provider-specific eligibility gates MAY be configured here. They MUST be applied consistently
+    during candidate discovery and issue-ID revalidation so a running issue cannot retain stale
+    eligibility.
 - `required_labels` (list of strings)
   - Default: `[]`.
   - An issue MUST contain every configured label to dispatch or continue.

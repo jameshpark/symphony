@@ -268,8 +268,12 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Tracker API token missing in WORKFLOW.md")
         state
 
-      {:error, :missing_linear_project_slug} ->
-        Logger.error("Tracker project scope missing in WORKFLOW.md")
+      {:error, :missing_linear_project_slug_or_team_key} ->
+        Logger.error("Tracker project or team scope missing in WORKFLOW.md")
+        state
+
+      {:error, :multiple_linear_scopes} ->
+        Logger.error("Tracker project and team scopes are mutually exclusive in WORKFLOW.md")
         state
 
       {:error, :missing_tracker_kind} ->

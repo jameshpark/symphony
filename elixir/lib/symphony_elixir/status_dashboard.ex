@@ -399,6 +399,10 @@ defmodule SymphonyElixir.StatusDashboard do
         when is_binary(project_slug) and project_slug != "" ->
           colorize(linear_project_url(project_slug), @ansi_cyan)
 
+        %{kind: "linear", team_key: team_key}
+        when is_binary(team_key) and team_key != "" ->
+          colorize("Linear team #{team_key}", @ansi_cyan)
+
         _ ->
           colorize("n/a", @ansi_gray)
       end

@@ -507,7 +507,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                       relationFirst: 50
                     }}
 
-    assert query =~ "SymphonyLinearIssuesById"
+    assert query =~ "SymphonyLinearProjectIssuesById"
     assert query =~ "projectSlug"
     assert query =~ "slugId"
 
@@ -518,6 +518,299 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                       first: 5,
                       relationFirst: 50
                     }}
+  end
+
+  test "linear client uses exact team scope for discovery and id refreshes" do
+    raw_issue = %{
+      "id" => "issue-eng",
+      "identifier" => "ENG-1",
+      "title" => "Team-scoped issue",
+      "state" => %{"name" => "In Progress"},
+      "assignee" => %{"id" => "user-1"},
+      "labels" => %{"nodes" => []},
+      "inverseRelations" => %{"nodes" => []}
+    }
+
+    discovery_graphql = fn query, variables ->
+      if query =~ "SymphonyLinearIssueComments" do
+        send(self(), {:team_discovery_comment, query, variables})
+
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "comments" => %{
+                 "nodes" => [
+                   %{"body" => "symphony:ready", "user" => %{"id" => "user-1"}}
+                 ],
+                 "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+               }
+             }
+           }
+         }}
+      else
+        send(self(), {:team_discovery, query, variables})
+
+        {:ok,
+         %{
+           "data" => %{
+             "issues" => %{
+               "nodes" => [raw_issue],
+               "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+             }
+           }
+         }}
+      end
+    end
+
+    assert {:ok, [%Issue{id: "issue-eng", dispatchable: true}]} =
+             Client.fetch_issues_by_states_for_test(
+               ["In Progress"],
+               discovery_graphql,
+               scope: {:team, "ENG"},
+               assignee: "user-1",
+               required_comment: "symphony:ready"
+             )
+
+    assert_receive {:team_discovery, discovery_query,
+                    %{
+                      teamKey: "ENG",
+                      stateNames: ["In Progress"],
+                      first: 50,
+                      relationFirst: 50,
+                      after: nil
+                    }}
+
+    assert discovery_query =~ "SymphonyLinearTeamPoll"
+    assert discovery_query =~ "team: {key: {eq: $teamKey}}"
+    refute discovery_query =~ "projectSlug"
+
+    assert_receive {:team_discovery_comment, comment_query, %{issueId: "issue-eng", first: 50, after: nil}}
+
+    assert comment_query =~ "SymphonyLinearIssueComments"
+
+    refresh_graphql = fn query, variables ->
+      send(self(), {:team_refresh, query, variables})
+      {:ok, %{"data" => %{"issues" => %{"nodes" => [raw_issue]}}}}
+    end
+
+    assert {:ok, [%Issue{id: "issue-eng", dispatchable: true}]} =
+             Client.fetch_issues_by_ids_for_test(
+               ["issue-eng"],
+               refresh_graphql,
+               scope: {:team, "ENG"},
+               assignee: "user-1"
+             )
+
+    assert_receive {:team_refresh, refresh_query, %{ids: ["issue-eng"], teamKey: "ENG", first: 1, relationFirst: 50}}
+
+    assert refresh_query =~ "SymphonyLinearTeamIssuesById"
+    assert refresh_query =~ "team: {key: {eq: $teamKey}}"
+    refute refresh_query =~ "projectSlug"
+  end
+
+  test "required comment gate paginates and matches exact trimmed body from configured assignee" do
+    raw_issue = %{
+      "id" => "issue-ready",
+      "identifier" => "ENG-2",
+      "title" => "Ready issue",
+      "state" => %{"name" => "In Progress"},
+      "assignee" => %{"id" => "user-1"},
+      "labels" => %{"nodes" => [%{"name" => "Backend"}]},
+      "inverseRelations" => %{"nodes" => []}
+    }
+
+    graphql_fun = fn query, variables ->
+      cond do
+        query =~ "SymphonyLinearTeamIssuesById" ->
+          {:ok, %{"data" => %{"issues" => %{"nodes" => [raw_issue]}}}}
+
+        query =~ "SymphonyLinearIssueComments" and variables.after == nil ->
+          send(self(), {:comment_page, variables})
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" => [
+                     %{"body" => "symphony:ready", "user" => nil},
+                     %{"body" => "symphony:ready", "user" => %{"id" => "user-2"}}
+                   ],
+                   "pageInfo" => %{"hasNextPage" => true, "endCursor" => "comments-2"}
+                 }
+               }
+             }
+           }}
+
+        query =~ "SymphonyLinearIssueComments" and variables.after == "comments-2" ->
+          send(self(), {:comment_page, variables})
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" => [
+                     %{"body" => "  symphony:ready\n", "user" => %{"id" => "user-1"}}
+                   ],
+                   "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+                 }
+               }
+             }
+           }}
+      end
+    end
+
+    assert {:ok, [%Issue{dispatchable: true}]} =
+             Client.fetch_issues_by_ids_for_test(
+               ["issue-ready"],
+               graphql_fun,
+               scope: {:team, "ENG"},
+               assignee: "user-1",
+               required_comment: " symphony:ready ",
+               required_labels: ["backend"]
+             )
+
+    assert_receive {:comment_page, %{issueId: "issue-ready", first: 50, after: nil}}
+
+    assert_receive {:comment_page, %{issueId: "issue-ready", first: 50, after: "comments-2"}}
+  end
+
+  test "required comment gate is case-sensitive and rejects wrong or null authors" do
+    raw_issue = %{
+      "id" => "issue-not-ready",
+      "identifier" => "ENG-3",
+      "title" => "Not ready issue",
+      "state" => %{"name" => "In Progress"},
+      "assignee" => %{"id" => "user-1"},
+      "labels" => %{"nodes" => []},
+      "inverseRelations" => %{"nodes" => []}
+    }
+
+    graphql_fun = fn query, _variables ->
+      if query =~ "IssuesById" do
+        {:ok, %{"data" => %{"issues" => %{"nodes" => [raw_issue]}}}}
+      else
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "comments" => %{
+                 "nodes" => [
+                   %{"body" => "Symphony:ready", "user" => %{"id" => "user-1"}},
+                   %{"body" => "symphony:ready", "user" => %{"id" => "user-2"}},
+                   %{"body" => "symphony:ready", "user" => nil}
+                 ],
+                 "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+               }
+             }
+           }
+         }}
+      end
+    end
+
+    assert {:ok, [%Issue{dispatchable: false}]} =
+             Client.fetch_issues_by_ids_for_test(
+               ["issue-not-ready"],
+               graphql_fun,
+               assignee: "user-1",
+               required_comment: "symphony:ready"
+             )
+  end
+
+  test "required comment lookup is lazy after ordinary label eligibility" do
+    raw_issue = %{
+      "id" => "issue-wrong-label",
+      "identifier" => "ENG-4",
+      "title" => "Wrong label issue",
+      "state" => %{"name" => "In Progress"},
+      "assignee" => %{"id" => "user-1"},
+      "labels" => %{"nodes" => [%{"name" => "frontend"}]},
+      "inverseRelations" => %{"nodes" => []}
+    }
+
+    graphql_fun = fn query, _variables ->
+      refute query =~ "SymphonyLinearIssueComments"
+      {:ok, %{"data" => %{"issues" => %{"nodes" => [raw_issue]}}}}
+    end
+
+    assert {:ok, [%Issue{dispatchable: true} = issue]} =
+             Client.fetch_issues_by_ids_for_test(
+               ["issue-wrong-label"],
+               graphql_fun,
+               assignee: "user-1",
+               required_comment: "symphony:ready",
+               required_labels: ["backend"]
+             )
+
+    refute Issue.routable?(issue, ["backend"])
+  end
+
+  test "required comment revocation makes a running issue non-routable on refresh" do
+    raw_issue = %{
+      "id" => "issue-revoked",
+      "identifier" => "ENG-5",
+      "title" => "Revoked issue",
+      "state" => %{"name" => "In Progress"},
+      "assignee" => %{"id" => "user-1"},
+      "labels" => %{"nodes" => []},
+      "inverseRelations" => %{"nodes" => []}
+    }
+
+    graphql_fun = fn query, _variables ->
+      if query =~ "IssuesById" do
+        {:ok, %{"data" => %{"issues" => %{"nodes" => [raw_issue]}}}}
+      else
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "comments" => %{
+                 "nodes" => [],
+                 "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+               }
+             }
+           }
+         }}
+      end
+    end
+
+    assert {:ok, [%Issue{dispatchable: false} = refreshed_issue]} =
+             Client.fetch_issues_by_ids_for_test(
+               ["issue-revoked"],
+               graphql_fun,
+               assignee: "user-1",
+               required_comment: "symphony:ready"
+             )
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    state = %Orchestrator.State{
+      running: %{
+        refreshed_issue.id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: refreshed_issue.identifier,
+          issue: %{refreshed_issue | dispatchable: true},
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([refreshed_issue.id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([refreshed_issue], state)
+
+    refute Process.alive?(agent_pid)
+    refute Map.has_key?(updated_state.running, refreshed_issue.id)
+    refute MapSet.member?(updated_state.claimed, refreshed_issue.id)
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do
@@ -919,6 +1212,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.api_key == nil
     assert config.tracker.project_slug == nil
+    assert config.tracker.team_key == nil
+    assert config.tracker.required_comment == nil
     assert config.tracker.required_labels == []
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
@@ -1115,7 +1410,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                  provider: %{
                    endpoint: "https://linear.example.test/graphql",
                    api_key: "provider-token",
-                   project_slug: "provider-project",
+                   team_key: "ENG",
+                   assignee: "me",
+                   required_comment: "symphony:ready",
                    extra: %{team: "platform"}
                  }
                }
@@ -1123,14 +1420,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert settings.tracker.endpoint == "https://linear.example.test/graphql"
     assert settings.tracker.api_key == "provider-token"
-    assert settings.tracker.project_slug == "provider-project"
+    assert settings.tracker.project_slug == nil
+    assert settings.tracker.team_key == "ENG"
+    assert settings.tracker.assignee == "me"
+    assert settings.tracker.required_comment == "symphony:ready"
     assert settings.tracker.secret_environment_names == ["LINEAR_API_KEY"]
 
     assert settings.tracker.provider == %{
              "endpoint" => "https://linear.example.test/graphql",
              "api_key" => "provider-token",
-             "project_slug" => "provider-project",
-             "assignee" => nil,
+             "project_slug" => nil,
+             "team_key" => "ENG",
+             "assignee" => "me",
+             "required_comment" => "symphony:ready",
              "extra" => %{"team" => "platform"}
            }
   end
@@ -1168,6 +1470,52 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:error, :invalid_linear_assignee} =
              Config.validate_settings(invalid_assignee_settings)
+
+    assert {:ok, invalid_required_comment_settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{
+                   api_key: "token",
+                   team_key: "ENG",
+                   assignee: "me",
+                   required_comment: " "
+                 }
+               }
+             })
+
+    assert {:error, :invalid_linear_required_comment} =
+             Config.validate_settings(invalid_required_comment_settings)
+
+    assert {:ok, missing_comment_assignee_settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{
+                   api_key: "token",
+                   team_key: "ENG",
+                   required_comment: "symphony:ready"
+                 }
+               }
+             })
+
+    assert {:error, :linear_required_comment_requires_assignee} =
+             Config.validate_settings(missing_comment_assignee_settings)
+
+    assert {:ok, multiple_scope_settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "linear",
+                 provider: %{
+                   api_key: "token",
+                   project_slug: "project",
+                   team_key: "ENG"
+                 }
+               }
+             })
+
+    assert {:error, :multiple_linear_scopes} =
+             Config.validate_settings(multiple_scope_settings)
   end
 
   test "schema does not inject linear defaults before an adapter is selected" do

@@ -120,7 +120,9 @@ Minimal example:
 tracker:
   kind: linear
   provider:
-    project_slug: "..."
+    team_key: "ENG"
+    assignee: "me"
+    required_comment: "agent:ready"
 workspace:
   root: ~/code/workspaces
 hooks:
@@ -142,8 +144,8 @@ Notes:
 
 - If a value is missing, defaults are used.
 - `tracker.kind` selects an adapter. Adapter-owned endpoint, scope, and auth settings belong under
-  `tracker.provider`; the current Linear adapter still accepts the older flat `endpoint`,
-  `api_key`, `project_slug`, and `assignee` aliases for compatibility.
+  `tracker.provider`; the current Linear adapter also accepts flat `endpoint`, `api_key`,
+  `project_slug`, `team_key`, `assignee`, and `required_comment` aliases.
 - `tracker.required_labels` is optional. When set, an issue must have every
   configured label to dispatch or continue running. Label matching ignores
   case and surrounding whitespace. A blank configured label matches no issue.
@@ -200,13 +202,15 @@ codex:
 
 - Config: use `tracker.kind: linear` with `tracker.provider.endpoint` (default
   `https://api.linear.app/graphql`), `api_key` (defaults to `LINEAR_API_KEY` and accepts
-  `$VAR`), required `project_slug`, and optional `assignee` (a Linear user ID or `me`,
-  defaulting to `LINEAR_ASSIGNEE`).
-  The legacy flat `tracker.endpoint`, `api_key`, `project_slug`, and `assignee` aliases remain
-  supported. `required_labels`, `active_states`, and `terminal_states` stay under `tracker`.
-- Scope and paging: candidate reads filter the configured project slug and requested state names,
-  following Linear pages of 50. ID refreshes are also project-scoped and batch up to 50 IDs. Empty
-  state/ID lists return `{:ok, []}` without a Linear request.
+  `$VAR`), exactly one of `project_slug` or `team_key`, and optional `assignee` (a Linear user ID
+  or `me`, defaulting to `LINEAR_ASSIGNEE`). `required_comment` optionally requires an exact
+  comment from that configured assignee and is invalid without `assignee`.
+  The flat `tracker.endpoint`, `api_key`, `project_slug`, `team_key`, `assignee`, and
+  `required_comment` aliases remain supported. `required_labels`, `active_states`, and
+  `terminal_states` stay under `tracker`.
+- Scope and paging: candidate reads filter the configured project slug or exact team key and
+  requested state names, following Linear pages of 50. ID refreshes use the same scope and batch
+  up to 50 IDs. Empty state/ID lists return `{:ok, []}` without a Linear request.
 - Identity and normalization: `issue.id` is the Linear issue ID and `issue.native_ref` is currently
   `nil`. Records missing a nonblank ID, identifier, title, or state are dropped from candidate
   pages and fail ID refreshes. State keeps Linear's spelling; integer priorities are preserved and
@@ -214,17 +218,24 @@ codex:
   `nil`. Labels are trimmed, lowercased, deduplicated, and blanks are dropped; blockers come from
   inverse `blocks` relations.
 - Dispatchability: the adapter marks an issue dispatchable only when optional assignee routing
-  matches and a `Todo` issue has no non-terminal blocker. The generic scheduler then applies
+  matches and a `Todo` issue has no non-terminal blocker. When `required_comment` is configured,
+  the adapter lazily pages comments only for otherwise-routable issues and requires a non-null
+  author matching the configured assignee plus a case-sensitive body match after trimming both
+  values. The gate is recomputed during ID refreshes, so editing or deleting the last match makes
+  an active issue non-routable on the next reconciliation. The generic scheduler then applies
   active/terminal states, required labels, claims, retries, and concurrency.
 - Tool: the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
   object with nonblank `query` and optional object `variables`. Symphony executes it host-side
   with the session-bound endpoint/token and strips declared token environment variables from the
-  Codex child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
-  whatever the configured Linear token can access.
+  Codex child. `project_slug` or `team_key` scopes scheduler reads, not raw tool calls; the tool can
+  access whatever the configured Linear token can access.
 - Responsibility and errors: `linear_graphql` adds no idempotency key, retry, scope guard, or
   rate-limit policy, so workflows own idempotent mutations and handling provider errors. Read/config
-  failures use `{:error, :missing_linear_api_token}`, `{:error, :missing_linear_project_slug}`,
+  failures use `{:error, :missing_linear_api_token}`,
+  `{:error, :missing_linear_project_slug_or_team_key}`, `{:error, :multiple_linear_scopes}`,
   `{:error, :invalid_linear_endpoint}`, `{:error, :invalid_linear_assignee}`,
+  `{:error, :invalid_linear_required_comment}`,
+  `{:error, :linear_required_comment_requires_assignee}`,
   `{:error, :missing_linear_viewer_identity}`, `{:error, {:linear_api_status, status}}`,
   `{:error, {:linear_api_request, reason}}`, `{:error, {:linear_graphql_errors, errors}}`,
   `{:error, :linear_unknown_payload}`, or `{:error, :linear_missing_end_cursor}`. Tool results

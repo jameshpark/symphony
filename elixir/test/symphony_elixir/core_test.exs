@@ -17,6 +17,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    assert config.tracker.team_key == nil
+    assert config.tracker.required_comment == nil
     assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -43,7 +45,24 @@ defmodule SymphonyElixir.CoreTest do
       tracker_project_slug: nil
     )
 
-    assert {:error, :missing_linear_project_slug} = Config.validate!()
+    assert {:error, :missing_linear_project_slug_or_team_key} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil,
+      tracker_team_key: "ENG"
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.team_key == "ENG"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: "project",
+      tracker_team_key: "ENG"
+    )
+
+    assert {:error, :multiple_linear_scopes} = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "   ",
@@ -54,10 +73,25 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
-      tracker_project_slug: ""
+      tracker_project_slug: "",
+      tracker_team_key: nil
     )
 
-    assert {:error, :missing_linear_project_slug} = Config.validate!()
+    assert {:error, :missing_linear_project_slug_or_team_key} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_required_comment: " ",
+      tracker_assignee: "me"
+    )
+
+    assert {:error, :invalid_linear_required_comment} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_required_comment: "symphony:ready",
+      tracker_assignee: nil
+    )
+
+    assert {:error, :linear_required_comment_requires_assignee} = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",
@@ -116,18 +150,23 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(get_in(tracker, ["provider", "project_slug"]))
-    assert is_list(Map.get(tracker, "active_states"))
-    assert is_list(Map.get(tracker, "terminal_states"))
+    assert get_in(tracker, ["provider", "project_slug"]) == nil
+    assert get_in(tracker, ["provider", "team_key"]) == "ENG"
+    assert get_in(tracker, ["provider", "assignee"]) == "me"
+    assert get_in(tracker, ["provider", "required_comment"]) == "symphony:ready"
+    assert Map.get(tracker, "required_labels") == []
+    assert Map.get(tracker, "active_states") == ["Todo", "In Progress"]
+    assert Map.get(tracker, "terminal_states") == ["Canceled", "Duplicate", "Done"]
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
-    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
+    assert Map.get(hooks, "after_create") == "git clone git@github.com:upsmith-dev/upsmith.git .\n"
+    assert Map.get(hooks, "before_remove") == nil
 
     assert String.trim(prompt) != ""
+    assert prompt =~ "Invoke exactly one of `pr-plan` or `pr-deliver`"
+    assert prompt =~ "to `Blocked`"
+    assert prompt =~ "`In Review`"
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
   end
@@ -286,7 +325,7 @@ defmodule SymphonyElixir.CoreTest do
 
     previous_trap_exit = Process.flag(:trap_exit, true)
 
-    assert {:error, :missing_linear_project_slug} =
+    assert {:error, :missing_linear_project_slug_or_team_key} =
              Orchestrator.start_link(name: orchestrator_name)
 
     Process.flag(:trap_exit, previous_trap_exit)
@@ -324,7 +363,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_project_slug: nil
     )
 
-    assert {:error, :missing_linear_project_slug} = Config.validate!()
+    assert {:error, :missing_linear_project_slug_or_team_key} = Config.validate!()
     assert Config.settings!().tracker.kind == "memory"
 
     Process.exit(original_orchestrator_pid, :kill)
@@ -1373,19 +1412,16 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
-    assert prompt =~ "You are working on a Linear ticket `MT-616`"
-    assert prompt =~ "Issue context:"
+    assert prompt =~ "Work autonomously on the Linear issue below"
     assert prompt =~ "Identifier: MT-616"
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"
-    assert prompt =~ "Current status: In Progress"
+    assert prompt =~ "Current state: In Progress"
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
-    assert prompt =~ "This is an unattended orchestration session."
-    assert prompt =~ "Only stop early for a true external blocker"
-    assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
-    assert prompt =~ "Do not call `gh pr merge` directly"
-    assert prompt =~ "Follow-up context:"
-    assert prompt =~ "follow-up attempt #2"
+    assert prompt =~ "Invoke exactly one of `pr-plan` or `pr-deliver`"
+    assert prompt =~ "Never request interactive human input"
+    assert prompt =~ "move it to `In Progress` and invoke `pr-plan`"
+    assert prompt =~ "to `Blocked`"
+    assert prompt =~ "`In Review`"
   end
 
   test "prompt builder adds continuation guidance for retries" do
