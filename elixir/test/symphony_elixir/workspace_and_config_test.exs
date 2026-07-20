@@ -283,6 +283,32 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace listing returns only existing issue directories" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workspace-list-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, []} = Workspace.list_issue_workspaces()
+
+      File.mkdir_p!(Path.join(workspace_root, "ENG-2"))
+      File.mkdir_p!(Path.join(workspace_root, "ENG-1"))
+      File.write!(Path.join(workspace_root, "not-a-workspace"), "ignore")
+
+      assert {:ok,
+              [
+                %{key: "ENG-1", worker_host: nil},
+                %{key: "ENG-2", worker_host: nil}
+              ]} = Workspace.list_issue_workspaces()
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace removes all workspaces for a closed issue identifier" do
     workspace_root =
       Path.join(
@@ -609,7 +635,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute refresh_query =~ "projectSlug"
   end
 
-  test "linear state fetch can skip required comments for terminal cleanup" do
+  test "linear issue fetches can skip required comments for terminal cleanup" do
     raw_issue = %{
       "id" => "issue-done",
       "identifier" => "ENG-4",
@@ -652,6 +678,21 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                       relationFirst: 50,
                       after: nil
                     }}
+
+    refute query =~ "SymphonyLinearIssueComments"
+    refute_receive {:terminal_fetch, _, _}
+
+    assert {:ok, [%Issue{id: "issue-done", dispatchable: true}]} =
+             Client.fetch_issues_by_ids_for_test(
+               ["ENG-4"],
+               graphql_fun,
+               scope: {:team, "ENG"},
+               assignee: "user-1",
+               required_comment: "symphony:ready",
+               apply_required_comment: false
+             )
+
+    assert_receive {:terminal_fetch, query, %{ids: ["ENG-4"], teamKey: "ENG", first: 1, relationFirst: 50}}
 
     refute query =~ "SymphonyLinearIssueComments"
     refute_receive {:terminal_fetch, _, _}
@@ -1934,6 +1975,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       case "$*" in
+        *"__SYMPHONY_WORKSPACE_KEY__"*)
+          printf '%s\\t%s\\n' '__SYMPHONY_WORKSPACE_KEY__' 'MT-SSH-WS'
+          ;;
         *"__SYMPHONY_WORKSPACE__"*)
           printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
           ;;
@@ -1955,6 +1999,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert Config.settings!().worker.ssh_hosts == ["worker-01:2200"]
       assert Config.settings!().workspace.root == workspace_root
       assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-WS", "worker-01:2200")
+
+      assert {:ok, [%{key: "MT-SSH-WS", worker_host: "worker-01:2200"}]} =
+               Workspace.list_issue_workspaces()
+
       assert :ok = Workspace.run_before_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
       assert :ok = Workspace.run_after_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
       assert :ok = Workspace.remove_issue_workspaces("MT-SSH-WS", "worker-01:2200")
@@ -1962,6 +2010,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       trace = File.read!(trace_file)
       assert trace =~ "-p 2200 worker-01 bash -lc"
       assert trace =~ "__SYMPHONY_WORKSPACE__"
+      assert trace =~ "__SYMPHONY_WORKSPACE_KEY__"
       assert trace =~ "~/.symphony-remote-workspaces/MT-SSH-WS"
       assert trace =~ "${workspace#\\~/}"
       assert trace =~ "echo before-run"

@@ -1127,8 +1127,6 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, release_issue_claim(state, issue_id)}
   end
 
-  defp cleanup_issue_workspace(identifier, worker_host \\ nil)
-
   defp cleanup_issue_workspace(%Issue{} = issue, worker_host) do
     Workspace.remove_issue_workspaces(issue, worker_host)
   end
@@ -1146,22 +1144,49 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(
-           Config.settings!().tracker.terminal_states,
-           apply_required_comment: false
-         ) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{} = issue ->
-            cleanup_issue_workspace(issue)
+    case Workspace.list_issue_workspaces() do
+      {:ok, []} ->
+        :ok
 
-          _ ->
-            :ok
-        end)
+      {:ok, workspaces} ->
+        cleanup_terminal_issue_workspaces(workspaces)
 
       {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+        Logger.warning("Skipping startup terminal workspace cleanup; failed to list workspaces: #{inspect(reason)}")
+    end
+  end
+
+  defp cleanup_terminal_issue_workspaces(workspaces) do
+    workspace_keys = workspaces |> Enum.map(& &1.key) |> Enum.uniq()
+
+    case Tracker.fetch_issues_by_ids(workspace_keys, apply_required_comment: false) do
+      {:ok, issues} ->
+        terminal_states = terminal_state_set()
+
+        terminal_issues_by_key =
+          Enum.reduce(issues, %{}, &put_terminal_issue(&1, &2, terminal_states))
+
+        Enum.each(workspaces, &cleanup_terminal_workspace(&1, terminal_issues_by_key))
+
+      {:error, reason} ->
+        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch workspace issues: #{inspect(reason)}")
+    end
+  end
+
+  defp put_terminal_issue(%Issue{} = issue, acc, terminal_states) do
+    if terminal_issue_state?(issue.state, terminal_states) do
+      Map.put(acc, Workspace.workspace_key(issue), issue)
+    else
+      acc
+    end
+  end
+
+  defp put_terminal_issue(_issue, acc, _terminal_states), do: acc
+
+  defp cleanup_terminal_workspace(%{key: key, worker_host: worker_host}, terminal_issues_by_key) do
+    case Map.get(terminal_issues_by_key, key) do
+      %Issue{} = issue -> cleanup_issue_workspace(issue, worker_host)
+      nil -> :ok
     end
   end
 

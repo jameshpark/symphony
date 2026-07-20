@@ -234,8 +234,9 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
-  @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_ids(issue_ids) when is_list(issue_ids) do
+  @spec fetch_issues_by_ids([String.t()], keyword()) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids(issue_ids, opts \\ []) when is_list(issue_ids) and is_list(opts) do
     ids = Enum.uniq(issue_ids)
 
     case ids do
@@ -250,7 +251,7 @@ defmodule SymphonyElixir.Linear.Client do
             ids,
             scope,
             assignee_filter,
-            tracker.required_comment,
+            required_comment_for_fetch(tracker.required_comment, opts),
             tracker.required_labels
           )
         end
@@ -350,7 +351,7 @@ defmodule SymphonyElixir.Linear.Client do
             ids,
             Keyword.get(opts, :scope, {:project, "test-project"}),
             assignee_filter,
-            Keyword.get(opts, :required_comment),
+            required_comment_for_fetch(Keyword.get(opts, :required_comment), opts),
             Keyword.get(opts, :required_labels, []),
             graphql_fun
           )

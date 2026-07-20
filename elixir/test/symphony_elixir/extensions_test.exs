@@ -15,8 +15,8 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, states}
     end
 
-    def fetch_issues_by_ids(issue_ids) do
-      send(self(), {:fetch_issues_by_ids_called, issue_ids})
+    def fetch_issues_by_ids(issue_ids, opts) do
+      send(self(), {:fetch_issues_by_ids_called, issue_ids, opts})
       {:ok, issue_ids}
     end
   end
@@ -27,7 +27,10 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, []}
     end
 
-    def fetch_issues_by_ids(_issue_ids), do: {:ok, []}
+    def fetch_issues_by_ids(issue_ids, opts) do
+      send(Application.fetch_env!(:symphony_elixir, :linear_client_test_pid), {:issue_fetch, issue_ids, opts})
+      {:ok, Application.get_env(:symphony_elixir, :linear_client_test_issues, [])}
+    end
   end
 
   defmodule SlowOrchestrator do
@@ -71,6 +74,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
     linear_client_test_pid = Application.get_env(:symphony_elixir, :linear_client_test_pid)
+    linear_client_test_issues = Application.get_env(:symphony_elixir, :linear_client_test_issues)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
@@ -83,6 +87,12 @@ defmodule SymphonyElixir.ExtensionsTest do
         Application.delete_env(:symphony_elixir, :linear_client_test_pid)
       else
         Application.put_env(:symphony_elixir, :linear_client_test_pid, linear_client_test_pid)
+      end
+
+      if is_nil(linear_client_test_issues) do
+        Application.delete_env(:symphony_elixir, :linear_client_test_issues)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_test_issues, linear_client_test_issues)
       end
     end)
 
@@ -254,22 +264,25 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert_receive {:fetch_issues_by_states_called, ["Done"], [apply_required_comment: false]}
 
-    assert {:ok, ["issue-1"]} = Adapter.fetch_issues_by_ids(["issue-1"])
-    assert_receive {:fetch_issues_by_ids_called, ["issue-1"]}
+    assert {:ok, ["issue-1"]} = Adapter.fetch_issues_by_ids(["issue-1"], [])
+    assert_receive {:fetch_issues_by_ids_called, ["issue-1"], []}
 
     assert [%{"name" => "linear_graphql"}] = Adapter.agent_tool_specs()
   end
 
-  test "orchestrator startup skips required comments for terminal workspace cleanup" do
+  test "orchestrator startup skips tracker cleanup reads when no workspaces exist" do
     Application.put_env(:symphony_elixir, :linear_client_module, RecordingLinearClient)
     Application.put_env(:symphony_elixir, :linear_client_test_pid, self())
+
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "empty-workspaces")
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "linear",
       tracker_assignee: "user-1",
       tracker_required_comment: "symphony:ready",
       tracker_active_states: ["Active For Dispatch"],
-      tracker_terminal_states: ["Terminal For Cleanup"]
+      tracker_terminal_states: ["Terminal For Cleanup"],
+      workspace_root: workspace_root
     )
 
     orchestrator_name = Module.concat(__MODULE__, :TerminalCleanupOrchestrator)
@@ -279,8 +292,43 @@ defmodule SymphonyElixir.ExtensionsTest do
       if Process.alive?(pid), do: Process.exit(pid, :normal)
     end)
 
-    assert_receive {:state_fetch, ["Terminal For Cleanup"], [apply_required_comment: false]}
     assert_receive {:state_fetch, ["Active For Dispatch"], []}
+    refute_receive {:issue_fetch, _, _}
+  end
+
+  test "orchestrator startup checks only existing workspaces and removes terminal ones" do
+    Application.put_env(:symphony_elixir, :linear_client_module, RecordingLinearClient)
+    Application.put_env(:symphony_elixir, :linear_client_test_pid, self())
+
+    terminal_issue = %Issue{id: "terminal-id", identifier: "ENG-4", state: "Done"}
+    active_issue = %Issue{id: "active-id", identifier: "ENG-5", state: "Todo"}
+    Application.put_env(:symphony_elixir, :linear_client_test_issues, [terminal_issue, active_issue])
+
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "existing-workspaces")
+    terminal_workspace = Path.join(workspace_root, terminal_issue.identifier)
+    active_workspace = Path.join(workspace_root, active_issue.identifier)
+    File.mkdir_p!(terminal_workspace)
+    File.mkdir_p!(active_workspace)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_assignee: "user-1",
+      tracker_required_comment: "symphony:ready",
+      tracker_active_states: ["Todo"],
+      tracker_terminal_states: ["Done"],
+      workspace_root: workspace_root
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :TargetedTerminalCleanupOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    assert_receive {:issue_fetch, ["ENG-4", "ENG-5"], [apply_required_comment: false]}
+    refute File.exists?(terminal_workspace)
+    assert File.dir?(active_workspace)
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

@@ -21,8 +21,9 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
-  @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_ids(issue_ids) do
+  @spec fetch_issues_by_ids([String.t()], keyword()) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids(issue_ids, _opts) do
     wanted_ids = MapSet.new(issue_ids)
 
     {:ok,

@@ -17,7 +17,8 @@ defmodule SymphonyElixir.Tracker do
 
   @callback fetch_issues_by_states([String.t()], keyword()) ::
               {:ok, [Issue.t()]} | {:error, term()}
-  @callback fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  @callback fetch_issues_by_ids([String.t()], keyword()) ::
+              {:ok, [Issue.t()]} | {:error, term()}
   @callback agent_tool_specs() :: [map()]
   @callback execute_agent_tool(String.t(), term(), keyword()) :: map()
   @callback secret_environment_names(map()) :: [String.t()]
@@ -33,9 +34,10 @@ defmodule SymphonyElixir.Tracker do
     adapter().fetch_issues_by_states(states, opts)
   end
 
-  @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_ids(issue_ids) do
-    adapter().fetch_issues_by_ids(issue_ids)
+  @spec fetch_issues_by_ids([String.t()], keyword()) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_ids(issue_ids, opts \\ []) do
+    adapter().fetch_issues_by_ids(issue_ids, opts)
   end
 
   @doc """

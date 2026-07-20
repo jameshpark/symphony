@@ -7,8 +7,10 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @remote_workspace_key_marker "__SYMPHONY_WORKSPACE_KEY__"
 
   @type worker_host :: String.t() | nil
+  @type issue_workspace :: %{key: String.t(), worker_host: worker_host()}
 
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
@@ -28,6 +30,89 @@ defmodule SymphonyElixir.Workspace do
       error in [ArgumentError, ErlangError, File.Error] ->
         Logger.error("Workspace creation failed #{issue_log_context(issue_context)} worker_host=#{worker_host_for_log(worker_host)} error=#{Exception.message(error)}")
         {:error, error}
+    end
+  end
+
+  @spec list_issue_workspaces() :: {:ok, [issue_workspace()]} | {:error, term()}
+  def list_issue_workspaces do
+    case Config.settings!().worker.ssh_hosts do
+      [] -> list_local_issue_workspaces()
+      worker_hosts -> list_remote_issue_workspaces(worker_hosts)
+    end
+  end
+
+  defp list_local_issue_workspaces do
+    root = Path.expand(Config.settings!().workspace.root)
+
+    case File.ls(root) do
+      {:ok, entries} ->
+        workspaces =
+          entries
+          |> Enum.filter(&(root |> Path.join(&1) |> File.dir?()))
+          |> Enum.sort()
+          |> Enum.map(&%{key: &1, worker_host: nil})
+
+        {:ok, workspaces}
+
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, {:workspace_list_failed, root, reason}}
+    end
+  end
+
+  defp list_remote_issue_workspaces(worker_hosts) do
+    Enum.reduce_while(worker_hosts, {:ok, []}, fn worker_host, {:ok, acc} ->
+      case list_remote_issue_workspaces_for_host(worker_host) do
+        {:ok, workspaces} -> {:cont, {:ok, acc ++ workspaces}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp list_remote_issue_workspaces_for_host(worker_host) do
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("workspace_root", Config.settings!().workspace.root),
+        "if [ -d \"$workspace_root\" ]; then",
+        "  for workspace in \"$workspace_root\"/*; do",
+        "    [ -d \"$workspace\" ] || continue",
+        "    key=${workspace##*/}",
+        "    printf '%s\\t%s\\n' '#{@remote_workspace_key_marker}' \"$key\"",
+        "  done",
+        "fi"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} ->
+        workspaces =
+          output
+          |> IO.iodata_to_binary()
+          |> String.split("\n", trim: true)
+          |> Enum.flat_map(&parse_remote_workspace_key(&1, worker_host))
+          |> Enum.uniq_by(& &1.key)
+          |> Enum.sort_by(& &1.key)
+
+        {:ok, workspaces}
+
+      {:ok, {output, status}} ->
+        {:error, {:workspace_list_failed, worker_host, status, output}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_remote_workspace_key(line, worker_host) do
+    case String.split(line, "\t", parts: 2) do
+      [@remote_workspace_key_marker, key] when key != "" ->
+        [%{key: key, worker_host: worker_host}]
+
+      _ ->
+        []
     end
   end
 
