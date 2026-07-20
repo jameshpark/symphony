@@ -1146,7 +1146,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+    case Tracker.fetch_issues_by_states(
+           Config.settings!().tracker.terminal_states,
+           apply_required_comment: false
+         ) do
       {:ok, issues} ->
         issues
         |> Enum.each(fn

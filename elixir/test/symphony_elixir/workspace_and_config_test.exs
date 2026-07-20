@@ -609,6 +609,54 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute refresh_query =~ "projectSlug"
   end
 
+  test "linear state fetch can skip required comments for terminal cleanup" do
+    raw_issue = %{
+      "id" => "issue-done",
+      "identifier" => "ENG-4",
+      "title" => "Completed issue",
+      "state" => %{"name" => "Done"},
+      "assignee" => %{"id" => "user-1"},
+      "labels" => %{"nodes" => []},
+      "inverseRelations" => %{"nodes" => []}
+    }
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:terminal_fetch, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [raw_issue],
+             "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, [%Issue{id: "issue-done", dispatchable: true}]} =
+             Client.fetch_issues_by_states_for_test(
+               ["Done"],
+               graphql_fun,
+               scope: {:team, "ENG"},
+               assignee: "user-1",
+               required_comment: "symphony:ready",
+               apply_required_comment: false
+             )
+
+    assert_receive {:terminal_fetch, query,
+                    %{
+                      teamKey: "ENG",
+                      stateNames: ["Done"],
+                      first: 50,
+                      relationFirst: 50,
+                      after: nil
+                    }}
+
+    refute query =~ "SymphonyLinearIssueComments"
+    refute_receive {:terminal_fetch, _, _}
+  end
+
   test "required comment gate paginates and matches exact trimmed body from configured assignee" do
     raw_issue = %{
       "id" => "issue-ready",

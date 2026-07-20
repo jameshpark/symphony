@@ -21,8 +21,9 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
-  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states(states), do: client_module().fetch_issues_by_states(states)
+  @spec fetch_issues_by_states([String.t()], keyword()) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(states, opts), do: client_module().fetch_issues_by_states(states, opts)
 
   @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_ids(issue_ids), do: client_module().fetch_issues_by_ids(issue_ids)

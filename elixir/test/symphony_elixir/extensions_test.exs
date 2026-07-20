@@ -10,8 +10,8 @@ defmodule SymphonyElixir.ExtensionsTest do
   @endpoint SymphonyElixirWeb.Endpoint
 
   defmodule FakeLinearClient do
-    def fetch_issues_by_states(states) do
-      send(self(), {:fetch_issues_by_states_called, states})
+    def fetch_issues_by_states(states, opts) do
+      send(self(), {:fetch_issues_by_states_called, states, opts})
       {:ok, states}
     end
 
@@ -19,6 +19,15 @@ defmodule SymphonyElixir.ExtensionsTest do
       send(self(), {:fetch_issues_by_ids_called, issue_ids})
       {:ok, issue_ids}
     end
+  end
+
+  defmodule RecordingLinearClient do
+    def fetch_issues_by_states(states, opts) do
+      send(Application.fetch_env!(:symphony_elixir, :linear_client_test_pid), {:state_fetch, states, opts})
+      {:ok, []}
+    end
+
+    def fetch_issues_by_ids(_issue_ids), do: {:ok, []}
   end
 
   defmodule SlowOrchestrator do
@@ -61,12 +70,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    linear_client_test_pid = Application.get_env(:symphony_elixir, :linear_client_test_pid)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(linear_client_test_pid) do
+        Application.delete_env(:symphony_elixir, :linear_client_test_pid)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_test_pid, linear_client_test_pid)
       end
     end)
 
@@ -230,13 +246,41 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "linear adapter delegates reads and advertises its native agent tool" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
-    assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
-    assert_receive {:fetch_issues_by_states_called, ["Todo"]}
+    assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"], [])
+    assert_receive {:fetch_issues_by_states_called, ["Todo"], []}
+
+    assert {:ok, ["Done"]} =
+             Adapter.fetch_issues_by_states(["Done"], apply_required_comment: false)
+
+    assert_receive {:fetch_issues_by_states_called, ["Done"], [apply_required_comment: false]}
 
     assert {:ok, ["issue-1"]} = Adapter.fetch_issues_by_ids(["issue-1"])
     assert_receive {:fetch_issues_by_ids_called, ["issue-1"]}
 
     assert [%{"name" => "linear_graphql"}] = Adapter.agent_tool_specs()
+  end
+
+  test "orchestrator startup skips required comments for terminal workspace cleanup" do
+    Application.put_env(:symphony_elixir, :linear_client_module, RecordingLinearClient)
+    Application.put_env(:symphony_elixir, :linear_client_test_pid, self())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_assignee: "user-1",
+      tracker_required_comment: "symphony:ready",
+      tracker_active_states: ["Active For Dispatch"],
+      tracker_terminal_states: ["Terminal For Cleanup"]
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :TerminalCleanupOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    assert_receive {:state_fetch, ["Terminal For Cleanup"], [apply_required_comment: false]}
+    assert_receive {:state_fetch, ["Active For Dispatch"], []}
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

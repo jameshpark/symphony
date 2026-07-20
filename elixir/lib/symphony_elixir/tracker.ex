@@ -15,7 +15,8 @@ defmodule SymphonyElixir.Tracker do
     "memory" => SymphonyElixir.Tracker.Memory
   }
 
-  @callback fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  @callback fetch_issues_by_states([String.t()], keyword()) ::
+              {:ok, [Issue.t()]} | {:error, term()}
   @callback fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   @callback agent_tool_specs() :: [map()]
   @callback execute_agent_tool(String.t(), term(), keyword()) :: map()
@@ -26,9 +27,10 @@ defmodule SymphonyElixir.Tracker do
                       execute_agent_tool: 3,
                       validate_config: 1
 
-  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states(states) do
-    adapter().fetch_issues_by_states(states)
+  @spec fetch_issues_by_states([String.t()], keyword()) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(states, opts \\ []) do
+    adapter().fetch_issues_by_states(states, opts)
   end
 
   @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}

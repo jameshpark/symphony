@@ -7,8 +7,9 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   alias SymphonyElixir.Tracker.Issue
 
-  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states(state_names) do
+  @spec fetch_issues_by_states([String.t()], keyword()) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(state_names, _opts) do
     normalized_states =
       state_names
       |> Enum.map(&normalize_state/1)

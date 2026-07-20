@@ -210,8 +210,9 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
-  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states(state_names) when is_list(state_names) do
+  @spec fetch_issues_by_states([String.t()], keyword()) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(state_names, opts \\ []) when is_list(state_names) and is_list(opts) do
     normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
 
     case normalized_states do
@@ -226,7 +227,7 @@ defmodule SymphonyElixir.Linear.Client do
             scope,
             states,
             assignee_filter,
-            tracker.required_comment,
+            required_comment_for_fetch(tracker.required_comment, opts),
             tracker.required_labels
           )
         end
@@ -370,7 +371,7 @@ defmodule SymphonyElixir.Linear.Client do
         Keyword.get(opts, :scope, {:project, "test-project"}),
         state_names,
         assignee_filter,
-        Keyword.get(opts, :required_comment),
+        required_comment_for_fetch(Keyword.get(opts, :required_comment), opts),
         Keyword.get(opts, :required_labels, []),
         graphql_fun
       )
@@ -577,6 +578,10 @@ defmodule SymphonyElixir.Linear.Client do
   defp scope_query({:team, team_key}, _project_query, team_query, variables)
        when is_binary(team_key) do
     {team_query, Map.put(variables, :teamKey, String.trim(team_key))}
+  end
+
+  defp required_comment_for_fetch(required_comment, opts) do
+    if Keyword.get(opts, :apply_required_comment, true), do: required_comment, else: nil
   end
 
   defp apply_required_comment_gate(
